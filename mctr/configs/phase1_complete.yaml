@@ -1,0 +1,71 @@
+experiment:
+  name: phase1_complete_extended
+
+backbone:
+  name: Qwen/Qwen2.5-0.5B-Instruct
+  freeze: true
+  device: auto
+  dtype: bfloat16
+
+datasets:
+  gsm8k:
+    enabled: true
+    configs:
+      - main
+      - socratic
+  bbh:
+    enabled: true
+    tasks:
+      - boolean_expressions
+      - causal_judgement
+      - date_understanding
+
+state:
+  entropy: true
+  confidence: true
+  uncertainty: normalized_entropy
+  novelty: cosine
+  conflict: js_divergence
+  stability: exponential
+
+meta:
+  input_dim: 6
+  hidden_dim: 64
+  output_dim: 32
+
+controller:
+  enabled: true
+  mode: learned
+  temperature_min: 0.1
+  temperature_max: 1.5
+  initial_temperature: 0.7
+  hidden_dim: 32
+  eta_T: 0.05
+
+entropy:
+  target_mode: adaptive
+  target_value: 0.5
+  target_hidden_dim: 16
+
+training:
+  epochs: 5
+  learning_rate: 0.001
+  batch_size: 4
+  seq_len: 256
+  seeds:
+    - 42
+    - 123
+    - 2026
+
+loss:
+  task_weight: 1.0
+  meta_weight: 1.0
+  calibration_weight: 0.1
+  entropy_weight: 0.5
+  regulation_weight: 0.1
+
+diagnostics:
+  save_attention: false
+  save_hidden_states: false
+  save_logits: false
+  save_probabilities: false

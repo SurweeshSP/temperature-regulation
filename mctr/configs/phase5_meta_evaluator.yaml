@@ -1,0 +1,27 @@
+experiment:
+  name: phase5_meta_evaluator
+
+backbone:
+  name: Qwen/Qwen2.5-1.5B
+  freeze: true
+  device: auto
+  dtype: bfloat16
+
+state:
+  entropy: true
+  confidence: true
+  uncertainty: normalized_entropy
+  novelty: cosine
+  conflict: js_divergence
+  stability: exponential
+
+meta:
+  input_dim: 6
+  hidden_dim: 64
+  output_dim: 32
+
+diagnostics:
+  save_attention: false
+  save_hidden_states: true
+  save_logits: false
+  save_probabilities: true

@@ -1,0 +1,5 @@
+Task,Model,Accuracy,Type,Temperature
+GSM8K,Baseline,0.75,Fixed,0.5
+GSM8K,MCTR,0.82,MCTR,0.5
+BBH,Baseline,0.6,Fixed,0.5
+BBH,MCTR,0.65,MCTR,0.5

@@ -1,0 +1,8 @@
+{
+    "timestamp": "2026-08-31T20:46:48.840368",
+    "model": "Qwen/Qwen2.5-1.5B",
+    "pytorch_version": "2.11.0+cpu",
+    "device": "cpu",
+    "batch_size": 8,
+    "seq_len": 16
+}

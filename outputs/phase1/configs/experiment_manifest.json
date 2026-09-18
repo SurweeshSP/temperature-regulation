@@ -1,0 +1,14 @@
+{
+    "model": "Qwen/Qwen2.5-0.5B-Instruct",
+    "dataset": "gsm8k_main, gsm8k_socratic, bbh",
+    "seeds_evaluated": [
+        42
+    ],
+    "device": "cuda",
+    "timestamp": "2026-09-17T20:14:19.694794",
+    "ablations": [
+        "MCTR-T-EntropyOnly",
+        "MCTR-T-ConfOnly",
+        "MCTR-T-NoEval"
+    ]
+}
