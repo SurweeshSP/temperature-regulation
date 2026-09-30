@@ -36,8 +36,8 @@ meta:
 controller:
   enabled: true
   mode: learned
-  temperature_min: 0.1
-  temperature_max: 1.5
+  temperature_min: 0.2
+  temperature_max: 1.2
   initial_temperature: 0.7
   hidden_dim: 32
   eta_T: 0.05

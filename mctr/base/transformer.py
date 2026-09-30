@@ -1,5 +1,5 @@
 import torch
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from typing import Optional
 from .interface import TransformerState
 
@@ -9,14 +9,18 @@ class MCTRTransformerWrapper:
         self.device = device
         self.dtype = dtype
         
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            device_map=device,
+            device_map=device if device == "cuda" else None,
             torch_dtype=dtype,
             output_hidden_states=True,
             output_attentions=True
         )
+        if device == "cpu":
+            self.model = self.model.to("cpu")
         self.model.eval()
+
         
     @torch.no_grad()
     def forward_with_state(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, return_attention: bool = False) -> TransformerState:

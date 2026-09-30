@@ -1,9 +1,13 @@
 import os
+os.environ["USE_TF"] = "0"
+os.environ["USE_TORCH"] = "1"
+
 import yaml
 import json
 import torch
 import numpy as np
 from datetime import datetime
+
 
 from mctr.base.transformer import MCTRTransformerWrapper
 from mctr.base.interface import TransformerState

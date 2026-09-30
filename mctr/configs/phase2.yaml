@@ -1,0 +1,133 @@
+experiment:
+  name: mctr_phase2_attention_regulation
+  phase: 2
+  description: >
+    Phase 2 of MCTR: Meta-Cognitive Attention Regulation.
+    Extends Phase 1 adaptive temperature to adaptive attention modulation.
+
+backbone:
+  name: Qwen/Qwen2.5-0.5B-Instruct
+  freeze: true
+  device: auto
+  dtype: bfloat16
+
+datasets:
+  gsm8k:
+    enabled: true
+    configs:
+      - main
+      - socratic
+  bbh:
+    enabled: true
+    tasks:
+      - boolean_expressions
+      - causal_judgement
+      - date_understanding
+
+evaluation:
+  seed: 42
+  max_examples: 150
+  seeds:
+    - 42
+    - 43
+    - 44
+  max_new_tokens: 256
+  do_sample: true           # MUST be true for behavioral evaluation
+  collect_attention: true   # enable attention map capture
+
+temperature_sweep:
+  values: [0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
+
+mctr_temperature:
+  min: 0.3
+  max: 1.2
+  initial: 0.7
+
+attention_control:
+  # One of: global, layer, head, none
+  mode: global
+  # Bounded modulation: ΔA ∈ [-beta, +beta]
+  beta: 2.0
+  # Maximum allowed beta (safety clamp)
+  beta_max: 5.0
+
+state:
+  entropy: true
+  confidence: true
+  uncertainty: normalized_entropy   # NOTE: U_t = H_t^norm (redundant with Ĥ_t; kept for compat)
+  novelty: cosine
+  conflict: js_divergence
+  stability: exponential
+
+meta:
+  input_dim: 6
+  hidden_dim: 64
+  output_dim: 32
+
+controller:
+  # Joint controller settings
+  controller_hidden_dim: 64
+  temperature_min: 0.3
+  temperature_max: 1.2
+  attention_control_mode: global
+  attention_modulation_bound: 2.0
+  attention_hidden_dim: 32
+
+  # Phase 1 temperature head (also used in Phase 2)
+  mode: learned
+  hidden_dim: 32
+  eta_T: 0.05
+
+entropy_target:
+  target_mode: adaptive
+  target_value: 0.5
+  target_hidden_dim: 16
+
+training:
+  # Staged training strategy
+  stage: 3                  # 1=meta-eval, 2=temp, 3=attn, 4=joint
+  epochs: 5
+  learning_rate: 0.001
+  batch_size: 4
+  seq_len: 256
+  freeze_meta_evaluator: true
+  freeze_temperature_controller: false
+  freeze_attention_controller: false
+
+loss:
+  task_weight: 1.0
+  meta_weight: 1.0
+  calibration_weight: 0.1
+  entropy_weight: 0.5
+  regulation_weight: 0.1
+  # Phase 2 additions
+  attention_diversity_weight: 0.05
+  attention_regularization_weight: 0.01
+
+checkpoints:
+  save_dir: outputs/phase2/checkpoints
+  phase1_meta_evaluator:      outputs/phase2/checkpoints/phase1_meta_evaluator.pt
+  phase1_temperature_ctrl:    outputs/phase2/checkpoints/phase1_temperature_controller.pt
+  phase2_attention_ctrl:      outputs/phase2/checkpoints/phase2_attention_controller.pt
+  phase2_joint_ctrl:          outputs/phase2/checkpoints/phase2_joint_controller.pt
+
+output:
+  base_dir: outputs/phase2
+  raw:       outputs/phase2/raw
+  tables:    outputs/phase2/tables
+  figures:   outputs/phase2/figures
+  logs:      outputs/phase2/logs
+  reports:   outputs/phase2/reports
+
+logging:
+  level: INFO
+  save_trajectories: true
+  save_attention_maps: false    # large; set true for analysis subset only
+
+diagnostics:
+  check_temperature_collapse: true
+  check_attention_collapse: true
+  check_nan_inf: true
+  check_circular_dependency: true
+  check_controller_saturation: true
+  redundancy_threshold: 0.95    # warn if |Corr(A,B)| > threshold

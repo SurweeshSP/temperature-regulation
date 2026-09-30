@@ -12,8 +12,8 @@ class MCTRController(nn.Module):
     def __init__(self, meta_dim: int, config: Dict[str, Any]):
         super().__init__()
         self.mode = config.get('mode', 'learned') # 'learned' or 'entropy_feedback'
-        self.t_min = config.get('temperature_min', 0.1)
-        self.t_max = config.get('temperature_max', 5.0)
+        self.t_min = config.get('temperature_min', 0.2)
+        self.t_max = config.get('temperature_max', 1.2)
         
         # We define a lightweight MLP mapping from meta-state embedding (m_t) to a raw control signal
         hidden_dim = config.get('hidden_dim', 32)

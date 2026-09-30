@@ -1,0 +1,7 @@
+,confidence,entropy,uncertainty,novelty,conflict,stability
+confidence,1.0,-0.846923251609655,,,0.48540149646000313,
+entropy,-0.846923251609655,1.0,,,-0.01662315582061211,
+uncertainty,,,,,,
+novelty,,,,,,
+conflict,0.48540149646000313,-0.01662315582061211,,,1.0,
+stability,,,,,,

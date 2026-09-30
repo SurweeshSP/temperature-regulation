@@ -9,32 +9,31 @@ from mctr.evaluation.calibration import compute_ece, compute_brier_score
 
 def check_correctness(predicted_text, example):
     """Fallback simplistic exact-match correctness checker."""
-    # Assuming extract_gsm8k_answer or bbh normalizers exist.
-    if 'answer' in example: # GSM8K
-        truth_raw = extract_gsm8k_answer(example['answer'])
+    target_val = example.get('raw_target', example.get('target', example.get('answer', '')))
+    if target_val: # GSM8K
+        truth_raw = extract_gsm8k_answer(str(target_val))
         pred_raw = extract_gsm8k_answer(predicted_text)
         
         truth = normalize_gsm8k_answer(truth_raw)
         pred = normalize_gsm8k_answer(pred_raw)
         
         return 1 if truth == pred and truth is not None else 0
-    elif 'target' in example: # BBH
-        truth = str(example['target']).strip().lower()
-        pred = str(predicted_text).strip().lower()
-        return 1 if truth in pred else 0
     return 0
 
-def run_inference_loop(transformer, dataset, state_extractor, evaluator, controller, conditions, device):
+
+def run_inference_loop(transformer, dataset, state_extractor, evaluator, controller, conditions, device, do_sample: bool = True):
     """
     Executes the inference loop over the dataset for specified conditions (e.g., Fixed-T sweeps, MCTR-T).
     Returns a dictionary of metrics for each condition.
     """
     metrics_out = {}
     
-    tokenizer = transformer.model.config.name_or_path if hasattr(transformer.model.config, 'name_or_path') else 'Qwen/Qwen2.5-0.5B-Instruct'
-    # Actually, we need the tokenizer from the transformer class if it holds it.
-    # We will assume `transformer.tokenizer` exists. If not, we'll mock tokenization.
-    has_tokenizer = hasattr(transformer, 'tokenizer')
+    has_tokenizer = transformer is not None and hasattr(transformer, 'tokenizer') and transformer.tokenizer is not None
+    if transformer is not None and hasattr(transformer, 'model') and transformer.model is not None:
+        model_obj = transformer.model
+    else:
+        model_obj = None
+
     
     import pandas as pd
     import os
@@ -60,16 +59,22 @@ def run_inference_loop(transformer, dataset, state_extractor, evaluator, control
         start_time = time.time()
         
         for idx, example in enumerate(tqdm(dataset, desc=f"Evaluating {condition_name}")):
-            # Tokenize question
-            question = example.get('question', example.get('input', ''))
-            
+            # Tokenize question/prompt
+            question = example.get('prompt', example.get('question', example.get('input', '')))
+            if not question:
+                question = "Question: "
+                
             if has_tokenizer:
-                inputs = transformer.tokenizer(question, return_tensors="pt").to(device)
-                input_ids = inputs.input_ids
+                inputs = transformer.tokenizer(question, return_tensors="pt")
+                input_ids = inputs.input_ids.to(device=device, dtype=torch.long)
+                if input_ids.shape[1] == 0:
+                    pad_id = transformer.tokenizer.eos_token_id if transformer.tokenizer.eos_token_id is not None else 1
+                    input_ids = torch.tensor([[pad_id]], device=device, dtype=torch.long)
                 eos_token_id = transformer.tokenizer.eos_token_id
             else:
-                input_ids = torch.randint(0, 151936, (1, 10)).to(device) # fallback
+                input_ids = torch.randint(0, 151936, (1, 10), device=device, dtype=torch.long)
                 eos_token_id = None
+
                 
             baseline_temp = condition_cfg.get('temperature', None) if condition_cfg.get('type') == 'fixed' else None
             
@@ -85,7 +90,7 @@ def run_inference_loop(transformer, dataset, state_extractor, evaluator, control
             
             with torch.inference_mode():
                 output_ids, trajectories = generate_with_mctr(
-                    model=transformer.model,
+                    model=model_obj,
                     input_ids=input_ids,
                     state_extractor=state_extractor,
                     evaluator=evaluator,
@@ -93,7 +98,8 @@ def run_inference_loop(transformer, dataset, state_extractor, evaluator, control
                     entropy_target_gen=entropy_tgt,
                     max_new_tokens=256,
                     baseline_temp=baseline_temp,
-                    eos_token_id=eos_token_id
+                    eos_token_id=eos_token_id,
+                    do_sample=do_sample
                 )
                 
             # Decode and Check correctness

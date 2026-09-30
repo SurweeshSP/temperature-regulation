@@ -17,10 +17,12 @@ def generate_with_mctr(
     entropy_target_gen: EntropyTarget,
     max_new_tokens: int = 256,
     baseline_temp: float = None,
-    eos_token_id: int = None
+    eos_token_id: int = None,
+    do_sample: bool = True
 ) -> Tuple[torch.Tensor, Dict[str, list]]:
     """
     Causal generation loop for Phase 1.
+    Supports both stochastic sampling (do_sample=True) and deterministic greedy decoding (do_sample=False).
     If baseline_temp is provided, runs a fixed-temperature baseline instead.
     """
     device = input_ids.device
@@ -38,11 +40,11 @@ def generate_with_mctr(
     T_prev = torch.full((batch_size,), controller.t_min if baseline_temp is None else baseline_temp, device=device)
     H_prev = torch.zeros(batch_size, device=device)
     
-    current_input_ids = input_ids
+    current_input_ids = input_ids.to(device=device, dtype=torch.long)
     past_key_values = None
     
     for t in range(max_new_tokens):
-        # 1. Meta-Cognition & Control (based on t-1)
+        # 1. Meta-Cognition & Control (based on state t-1)
         if baseline_temp is not None:
             T_t = torch.full((batch_size,), baseline_temp, device=device)
             H_star_t = torch.zeros(batch_size, device=device)
@@ -56,9 +58,11 @@ def generate_with_mctr(
             T_t = control_state.temperature
             
         # 2. Base Transformer Inference (Frozen)
-        # Use huggingface generation logic wrapper
+        step_input_ids = current_input_ids if past_key_values is None else current_input_ids[:, -1:]
+        step_input_ids = step_input_ids.to(device=device, dtype=torch.long)
+        
         outputs = model(
-            input_ids=current_input_ids if past_key_values is None else current_input_ids[:, -1:],
+            input_ids=step_input_ids,
             past_key_values=past_key_values,
             use_cache=True,
             output_hidden_states=True
@@ -68,7 +72,7 @@ def generate_with_mctr(
         hidden_state = outputs.hidden_states[-1][:, -1, :] # [batch_size, hidden_dim]
         past_key_values = outputs.past_key_values
         
-        # 3. Apply Temperature
+        # 3. Apply Temperature Scaling
         scaled_logits = logits / T_t.unsqueeze(-1)
         probs = F.softmax(scaled_logits, dim=-1)
         
@@ -79,14 +83,14 @@ def generate_with_mctr(
             probabilities=probs.unsqueeze(1)
         )
         
-        # Conflict mock for real loop (requires W_m/alpha_t for real conflict paths, mocked in phase 1)
+        # Conflict calculation
         alt_p = F.softmax(logits.unsqueeze(1) + torch.randn_like(logits.unsqueeze(1)) * 0.1, dim=-1)
         
         meta_state = state_extractor(mock_state, alt_p=alt_p)
         psi_t = meta_state.to_tensor().squeeze(1)
         current_H = meta_state.normalized_entropy.squeeze(1)
         
-        # Track
+        # Track trajectory
         trajectories['temperature'].append(T_t.cpu().to(torch.float32).numpy())
         trajectories['entropy'].append(current_H.cpu().to(torch.float32).numpy())
         trajectories['target_entropy'].append(H_star_t.cpu().to(torch.float32).numpy())
@@ -96,9 +100,14 @@ def generate_with_mctr(
         trajectories['conflict'].append(meta_state.conflict.squeeze(1).cpu().to(torch.float32).numpy())
         trajectories['stability'].append(meta_state.stability.squeeze(1).cpu().to(torch.float32).numpy())
         
-        # 5. Decode
-        # Greedy decode for phase 1 validation
-        next_token = torch.argmax(probs, dim=-1).unsqueeze(-1)
+        # 5. Decode Next Token (Stochastic Sampling vs Greedy)
+        if do_sample:
+            # Stochastic Sampling: temperature directly influences token choice
+            next_token = torch.multinomial(probs, num_samples=1).to(device=device, dtype=torch.long)
+        else:
+            # Deterministic Greedy Decoding: argmax
+            next_token = torch.argmax(probs, dim=-1).unsqueeze(-1).to(device=device, dtype=torch.long)
+            
         current_input_ids = torch.cat([current_input_ids, next_token], dim=-1)
         
         # Update recurrences

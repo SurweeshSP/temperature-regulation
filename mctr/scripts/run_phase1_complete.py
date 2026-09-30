@@ -1,11 +1,16 @@
 import os
 import sys
+
+os.environ["USE_TF"] = "0"
+os.environ["USE_TORCH"] = "1"
+
 import yaml
 import json
 import torch
 import pandas as pd
 import numpy as np
 from datetime import datetime
+
 
 # Add the project root to sys.path so 'mctr' can be imported when running as script
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
@@ -99,17 +104,18 @@ def run_experiment(config_path: str, smoke_test: bool = False, max_examples: int
     controller = MCTRController(meta_dim=config.get('meta', {}).get('output_dim', 32), config=config.get('controller', {})).to(device)
     
     # Override for fast, real-data single-seed evaluation
-    seeds = [42]
-    print(f"  Enforcing single-seed fast execution: {seeds}")
+    # Multi-seed stochastic sampling evaluation
+    seeds = [42, 43, 44]
+    print(f"  Enforcing multi-seed stochastic evaluation: {seeds}")
     
     if max_examples is None and not smoke_test:
-        max_examples = 2
-        print(f"  Enforcing fast-run by limiting examples per condition to: {max_examples}")
+        max_examples = 150
+        print(f"  Enforcing 150 examples per condition across seeds")
         
     tracker = EfficiencyTracker()
     tracker.start()
     
-    # Define Evaluation Conditions (Baseline Sweeps + MCTR Ablations)
+    # Define Evaluation Conditions (Baseline Sweeps + MCTR-T)
     eval_conditions = {
         'Fixed-T-0.1': {'type': 'fixed', 'temperature': 0.1},
         'Fixed-T-0.3': {'type': 'fixed', 'temperature': 0.3},
@@ -120,24 +126,18 @@ def run_experiment(config_path: str, smoke_test: bool = False, max_examples: int
         'MCTR-T': {'type': 'mctr', 'ablation': 'none'}
     }
     
-    print("\nSTEP 4-15: Simulating Causal Trajectories & Training Loops...")
+    print("\nSTEP 4-15: Executing Causal Inference Loops (Track 2: Stochastic Sampling)...")
     from mctr.evaluation.pipeline import run_inference_loop
     
-    all_metrics = {}
+    all_stochastic_metrics = {}
     for seed in seeds:
-        print(f"  --- Running Seed: {seed} ---")
+        print(f"  --- Running Stochastic Seed: {seed} ---")
         torch.manual_seed(seed)
         seed_metrics = {}
         
         for ds_name, ds_data in datasets.items():
             print(f"    Evaluating Dataset Split: {ds_name}")
-            # Limit the evaluation data length if requested
-            if smoke_test:
-                eval_data = ds_data[:5]
-            elif max_examples is not None:
-                eval_data = ds_data[:max_examples]
-            else:
-                eval_data = ds_data
+            eval_data = ds_data[:5] if smoke_test else (ds_data[:max_examples] if max_examples else ds_data)
             
             ds_metrics = run_inference_loop(
                 transformer=transformer,
@@ -146,10 +146,10 @@ def run_experiment(config_path: str, smoke_test: bool = False, max_examples: int
                 evaluator=evaluator,
                 controller=controller,
                 conditions=eval_conditions,
-                device=device
+                device=device,
+                do_sample=True
             )
             
-            # Format keys for table generation
             parsed_dataset = ds_name.split('_')[0]
             parsed_task = '_'.join(ds_name.split('_')[1:])
             
@@ -157,98 +157,101 @@ def run_experiment(config_path: str, smoke_test: bool = False, max_examples: int
                 seed_metrics[parsed_dataset] = {}
             seed_metrics[parsed_dataset][parsed_task] = ds_metrics
             
-        all_metrics[seed] = seed_metrics
+        all_stochastic_metrics[seed] = seed_metrics
         
-    tracker.stop(tokens_generated=len(seeds)*100)
+    # Also run Track 1 (Deterministic Greedy) for Seed 42 as Sanity Check
+    print("\nRunning Track 1: Deterministic Greedy Decoding (Seed 42)...")
+    torch.manual_seed(42)
+    deterministic_metrics = {}
+    for ds_name, ds_data in datasets.items():
+        eval_data = ds_data[:5] if smoke_test else (ds_data[:max_examples] if max_examples else ds_data)
+        ds_metrics = run_inference_loop(
+            transformer=transformer,
+            dataset=eval_data,
+            state_extractor=state_extractor,
+            evaluator=evaluator,
+            controller=controller,
+            conditions=eval_conditions,
+            device=device,
+            do_sample=False
+        )
+        parsed_dataset = ds_name.split('_')[0]
+        parsed_task = '_'.join(ds_name.split('_')[1:])
+        if parsed_dataset not in deterministic_metrics:
+            deterministic_metrics[parsed_dataset] = {}
+        deterministic_metrics[parsed_dataset][parsed_task] = ds_metrics
+
+    tracker.stop(tokens_generated=len(seeds)*150*256)
     eff_metrics = tracker.get_metrics()
     
-    print("\nSTEP 16-18: Generating Publication Figures...")
-    # Generate structured tables
-    print("  -> Exporting Tables to CSV/MD/LaTeX")
-    # Take the first seed's metrics for the primary tables as per standard evaluation
-    primary_metrics = all_metrics[seeds[0]]
+    print("\nSTEP 16-18: Aggregating Multi-Seed Metrics & Generating Publication Figures...")
+    os.makedirs(f"{out_dir}/tables", exist_ok=True)
     
-    # Write custom tables for FAST RUN
-    df_metrics = []
-    for cond_name, metrics in primary_metrics['gsm8k']['main_test'].items():
-        df_metrics.append({
+    # Aggregate multi-seed metrics (Mean & Std) across seeds
+    cond_names = list(eval_conditions.keys())
+    aggregated_metrics = []
+    
+    for cond_name in cond_names:
+        accs = [all_stochastic_metrics[s]['gsm8k']['main_test'][cond_name]['accuracy'] for s in seeds]
+        eces = [all_stochastic_metrics[s]['gsm8k']['main_test'][cond_name]['ece'] for s in seeds]
+        briers = [all_stochastic_metrics[s]['gsm8k']['main_test'][cond_name]['brier'] for s in seeds]
+        entropies = [all_stochastic_metrics[s]['gsm8k']['main_test'][cond_name]['mean_entropy'] for s in seeds]
+        confidences = [all_stochastic_metrics[s]['gsm8k']['main_test'][cond_name]['mean_confidence'] for s in seeds]
+        temps = [all_stochastic_metrics[s]['gsm8k']['main_test'][cond_name]['mean_temperature'] for s in seeds]
+        
+        det_acc = deterministic_metrics['gsm8k']['main_test'][cond_name]['accuracy']
+        det_ece = deterministic_metrics['gsm8k']['main_test'][cond_name]['ece']
+        
+        aggregated_metrics.append({
             'Condition': cond_name,
-            'Accuracy': metrics['accuracy'],
-            'NLL': metrics.get('nll', 0),
-            'ECE': metrics['ece'],
-            'Brier': metrics['brier'],
-            'Mean Entropy': metrics['mean_entropy'],
-            'Mean Confidence': metrics['mean_confidence'],
-            'Mean T': metrics['mean_temperature'],
-            'T Std': metrics['temperature_std'],
-            'Tokens': metrics['mean_generated_tokens'],
-            'Latency': metrics['latency'],
-            'Peak VRAM': metrics['peak_vram']
+            'Greedy Accuracy': det_acc,
+            'Stochastic Accuracy Mean': np.mean(accs),
+            'Stochastic Accuracy Std': np.std(accs),
+            'ECE Mean': np.mean(eces),
+            'ECE Std': np.std(eces),
+            'Brier Mean': np.mean(briers),
+            'Brier Std': np.std(briers),
+            'Mean Entropy': np.mean(entropies),
+            'Mean Confidence': np.mean(confidences),
+            'Mean T': np.mean(temps)
         })
-    df_fast = pd.DataFrame(df_metrics)
-    df_fast.to_markdown(f"{out_dir}/tables/table_fast_main_comparison.md", index=False)
+        
+    df_agg = pd.DataFrame(aggregated_metrics)
     
-    # Baseline Comparison
-    mctr_row = df_fast[df_fast['Condition'] == 'MCTR-T'].iloc[0]
+    # Formatting for markdown table
+    df_table = df_agg.copy()
+    df_table['Stochastic Accuracy'] = df_table.apply(lambda r: f"{r['Stochastic Accuracy Mean']*100:.2f}% ± {r['Stochastic Accuracy Std']*100:.2f}%", axis=1)
+    df_table['ECE'] = df_table.apply(lambda r: f"{r['ECE Mean']:.4f} ± {r['ECE Std']:.4f}", axis=1)
+    df_table['Brier'] = df_table.apply(lambda r: f"{r['Brier Mean']:.4f} ± {r['Brier Std']:.4f}", axis=1)
+    
+    df_table[['Condition', 'Greedy Accuracy', 'Stochastic Accuracy', 'ECE', 'Brier', 'Mean Entropy', 'Mean Confidence', 'Mean T']].to_markdown(f"{out_dir}/tables/table_fast_main_comparison.md", index=False)
+    
+    # Baseline comparison table (MCTR-T vs Fixed baselines under stochastic sampling)
+    mctr_row = df_agg[df_agg['Condition'] == 'MCTR-T'].iloc[0]
     baseline_diffs = []
-    for _, row in df_fast[df_fast['Condition'].str.contains('Fixed')].iterrows():
+    for _, row in df_agg[df_agg['Condition'].str.contains('Fixed')].iterrows():
         baseline_diffs.append({
-            'Comparison': f"MCTR vs {row['Condition']}",
-            'Δ Accuracy': mctr_row['Accuracy'] - row['Accuracy'],
-            'Δ ECE': mctr_row['ECE'] - row['ECE'],
-            'Δ Brier': mctr_row['Brier'] - row['Brier'],
-            'Δ Entropy': mctr_row['Mean Entropy'] - row['Mean Entropy'],
-            'Δ Confidence': mctr_row['Mean Confidence'] - row['Mean Confidence'],
-            'Δ Latency': mctr_row['Latency'] - row['Latency']
+            'Comparison': f"MCTR-T vs {row['Condition']}",
+            'Δ Accuracy': f"{(mctr_row['Stochastic Accuracy Mean'] - row['Stochastic Accuracy Mean'])*100:+.2f}%",
+            'Δ ECE': f"{mctr_row['ECE Mean'] - row['ECE Mean']:+.4f}",
+            'Δ Brier': f"{mctr_row['Brier Mean'] - row['Brier Mean']:+.4f}",
+            'Δ Entropy': f"{mctr_row['Mean Entropy'] - row['Mean Entropy']:+.4f}",
+            'Δ Confidence': f"{mctr_row['Mean Confidence'] - row['Mean Confidence']:+.4f}"
         })
     pd.DataFrame(baseline_diffs).to_markdown(f"{out_dir}/tables/table_mctr_vs_baseline.md", index=False)
     
-    # Mock Dataframes for the plotting functions to consume cleanly during implementation phase
-    mock_df = pd.DataFrame({
-        'Confidence': [0.9, 0.4, 0.8, 0.2],
-        'Normalized Entropy': [0.1, 0.8, 0.2, 0.9],
-        'Novelty': [0.2, 0.7, 0.1, 0.8],
-        'Conflict': [0.1, 0.5, 0.2, 0.9],
-        'Stability': [0.9, 0.3, 0.8, 0.1],
-        'Correct': [1, 0, 1, 0],
-        'Meta-Score': [0.95, 0.15, 0.85, 0.10],
-        'Temperature': [0.1, 1.2, 0.2, 1.4]
-    })
-    
-    generate_architecture_diagram(f"{plots_dir}/Fig01_MCTR_Architecture.md")
-    generate_state_distributions(mock_df, f"{plots_dir}/Fig02_MetaState_Distributions.png")
-    generate_correlation_matrix(mock_df, f"{plots_dir}/Fig03_Correlation.png")
-    
-    y_true = [1, 0, 1, 0]
-    y_scores = {'Confidence': [0.9, 0.4, 0.8, 0.2], 'Meta-Score': [0.95, 0.15, 0.85, 0.10]}
-    generate_roc_curves(y_true, y_scores, f"{plots_dir}/Fig04_State_ROC.png")
-    generate_pr_curves(y_true, y_scores, f"{plots_dir}/Fig05_State_PR.png")
-    
-    generate_entropy_vs_confidence(mock_df, f"{plots_dir}/Fig08_Temperature_State_Response_EntConf.png")
-    generate_temp_vs_meta(mock_df, f"{plots_dir}/Fig08_Temperature_State_Response_TempMeta.png")
-    
-    mock_traj = {
-        'temperature': [0.5, 0.6, 1.2, 1.4, 0.3],
-        'entropy': [0.2, 0.3, 0.8, 0.9, 0.1],
-        'target_entropy': [0.25, 0.35, 0.6, 0.7, 0.2]
-    }
-    generate_temperature_trajectory(mock_traj, f"{plots_dir}/Fig07_Temperature_Trajectories.png")
-    generate_entropy_control_trajectory(mock_traj, f"{plots_dir}/Fig06_Entropy_Target_Control.png")
-    
-    # Generate Benchmark visualisations from actual extracted metrics
+    # Generate Benchmark visualisations from extracted metrics
     bench_rows = []
-    for d, tasks in primary_metrics.items():
-        for t, conds in tasks.items():
-            for c, m in conds.items():
-                if c in ['Fixed-T-0.7', 'MCTR-T']:
-                    bench_rows.append({
-                        'Task': f"{d}_{t}",
-                        'Model': 'Baseline' if c == 'Fixed-T-0.7' else 'MCTR',
-                        'Accuracy': m['accuracy'],
-                        'Type': 'Fixed' if c == 'Fixed-T-0.7' else 'MCTR',
-                        'Temperature': m['mean_temperature']
-                    })
-    bench_df = pd.DataFrame(bench_rows) if bench_rows else pd.DataFrame({'Task': [], 'Model': [], 'Accuracy': [], 'Type': [], 'Temperature': []})
+    for _, row in df_agg.iterrows():
+        bench_rows.append({
+            'Task': 'GSM8K',
+            'Model': 'MCTR' if row['Condition'] == 'MCTR-T' else row['Condition'],
+            'Accuracy': row['Stochastic Accuracy Mean'],
+            'Accuracy_Std': row['Stochastic Accuracy Std'],
+            'Type': 'MCTR' if row['Condition'] == 'MCTR-T' else 'Fixed',
+            'Temperature': row['Mean T']
+        })
+    bench_df = pd.DataFrame(bench_rows)
     
     generate_baseline_comparison(bench_df, f"{plots_dir}/Fig10_Baseline_vs_MCTR.png")
     generate_fixed_temperature_sweep(bench_df, f"{plots_dir}/Fig09_FixedTemperature_Sweep.png")
@@ -258,67 +261,74 @@ def run_experiment(config_path: str, smoke_test: bool = False, max_examples: int
     fast_plots_dir = f"{out_dir}/figures"
     generate_fast_run_plots(paired_log_path, fast_plots_dir)
 
-    print("\nSTEP 19: Exporting Experiment Manifest & Tables...")
+    print("\nSTEP 19: Exporting Experiment Manifest & Config...")
+    n_examples_actual = max_examples if max_examples else len(datasets['gsm8k_main_test'])
     manifest = {
         "model": config['backbone']['name'],
         "dataset": "gsm8k_main_test",
         "seeds_evaluated": seeds,
         "device": device,
         "timestamp": datetime.now().isoformat(),
-        "n_examples": max_examples if max_examples else len(datasets['gsm8k_main_test']),
+        "n_examples": n_examples_actual,
+        "total_trajectories": n_examples_actual * len(eval_conditions) * len(seeds),
+        "decoding_modes": ["Deterministic Greedy (Track 1)", "Stochastic Sampling (Track 2)"],
+        "temperature_bounds": [0.2, 1.2],
         "conditions": list(eval_conditions.keys())
     }
     with open(f"{out_dir}/FAST_RUN_CONFIG.md", "w") as f:
         f.write("# FAST RUN CONFIG\n```json\n" + json.dumps(manifest, indent=4) + "\n```")
         
-    print("\nSTEP 20-22: Generating Report...")
-    # Ensure correct accuracy formatting
-    acc = primary_metrics['gsm8k']['main_test']['MCTR-T']['accuracy']
-    n_ex = manifest['n_examples']
-    correct_n = int(acc * n_ex)
+    print("\nSTEP 20-22: Generating Comprehensive Report...")
+    mctr_stoch = df_agg[df_agg['Condition'] == 'MCTR-T'].iloc[0]
     
-    report_content = f"""# MCTR Phase 1 Fast Validation
+    report_content = f"""# MCTR Phase 1 Adaptive Stochastic Validation Report
 
 ## Experimental Configuration
-- n = {n_ex}
-- seed = {seeds[0]}
-- max_new_tokens = 256
-- Evaluated deterministic static sample across all 7 conditions.
+- Dataset: GSM8K Main Test (n = {n_examples_actual})
+- Sampling Seeds Evaluated: {seeds} (3 random seeds per question across all conditions)
+- Total Trajectories Evaluated: {n_examples_actual} examples × 7 conditions × 3 seeds = {n_examples_actual * 7 * len(seeds)}
+- Decoding Mode: Adaptive Stochastic Sampling (`torch.multinomial`) vs Deterministic Greedy (`torch.argmax`)
+- Model Backbone: {config['backbone']['name']} (Fully Frozen)
+- MCTR Temperature Bounds: [$T_{{min}} = 0.2, T_{{max}} = 1.2$]
 
-## Dataset
-gsm8k config=main split=test
+---
 
-## Model
-{config['backbone']['name']}
+## Key Technical Finding: Decoder Coupling
+Under **Deterministic Greedy Decoding** (`argmax`), temperature scaling $\\frac{{z_t}}{{T_t}}$ preserves logit ordinal ranking ($\\arg\\max (z_t / T) = \\arg\\max(z_t)$). Therefore, greedy accuracy is identical across all temperatures ({df_agg['Greedy Accuracy'].iloc[0]*100:.2f}%).
 
-## Evaluation Conditions
-{', '.join(eval_conditions.keys())}
+Under **Adaptive Stochastic Sampling** (`multinomial`), temperature scaling directly participates in token selection ($T_t \\rightarrow P_t \\rightarrow y_t$), allowing accuracy differences and optimal regulation strategies to emerge.
 
-## Accuracy Results
-MCTR-T Accuracy: {correct_n}/{n_ex} = {acc*100:.1f}%
+---
 
-## Calibration Results
-MCTR-T ECE: {primary_metrics['gsm8k']['main_test']['MCTR-T']['ece']:.4f}
-MCTR-T Brier: {primary_metrics['gsm8k']['main_test']['MCTR-T']['brier']:.4f}
+## Accuracy & Calibration Results (Stochastic Sampling, Mean ± Std)
 
-## Entropy Results
-Mean Entropy: {primary_metrics['gsm8k']['main_test']['MCTR-T']['mean_entropy']:.4f}
+| Condition | Greedy Acc | Stochastic Accuracy (Mean ± Std) | ECE (Mean ± Std) | Brier (Mean ± Std) | Mean T |
+|:---|:---:|:---:|:---:|:---:|:---:|
+"""
+    for _, row in df_agg.iterrows():
+        report_content += f"| {row['Condition']} | {row['Greedy Accuracy']*100:.2f}% | {row['Stochastic Accuracy Mean']*100:.2f}% ± {row['Stochastic Accuracy Std']*100:.2f}% | {row['ECE Mean']:.4f} ± {row['ECE Std']:.4f} | {row['Brier Mean']:.4f} ± {row['Brier Std']:.4f} | {row['Mean T']:.4f} |\n"
 
-## MCTR Temperature Behavior
-Mean T: {primary_metrics['gsm8k']['main_test']['MCTR-T']['mean_temperature']:.4f}
-T Std: {primary_metrics['gsm8k']['main_test']['MCTR-T']['temperature_std']:.4f}
-T Min: {primary_metrics['gsm8k']['main_test']['MCTR-T']['temperature_min']:.4f}
-T Max: {primary_metrics['gsm8k']['main_test']['MCTR-T']['temperature_max']:.4f}
+    report_content += f"""
+---
+
+## MCTR Dynamic Temperature Regulation Behavior
+- Mean Temperature: {mctr_stoch['Mean T']:.4f}
+- Mean Normalized Entropy: {mctr_stoch['Mean Entropy']:.4f}
+- Mean Predictive Confidence: {mctr_stoch['Mean Confidence']:.4f}
+
+---
 
 ## Efficiency
-Latency: {eff_metrics['latency_sec']:.4f}s
-Peak VRAM: {eff_metrics['peak_vram_mb']:.2f} MB
+- Total Latency: {eff_metrics['latency_sec']:.2f}s
+- Peak VRAM Utilization: {eff_metrics['peak_vram_mb']:.2f} MB
 
-## Baseline Comparison
-See `outputs/phase1/tables/table_mctr_vs_baseline.md`
+---
 
-## Interpretation
-MCTR dynamic control successfully tracked internal state without collapsing to a single fixed scalar, validating the architecture.
+## Detailed Tables & Visualizations
+- Main Comparison Table: `outputs/phase1/tables/table_fast_main_comparison.md`
+- MCTR vs Baselines Table: `outputs/phase1/tables/table_mctr_vs_baseline.md`
+- Baseline vs MCTR Plot: `outputs/phase1/plots/publication/Fig10_Baseline_vs_MCTR.png`
+- Temperature Sweep Plot: `outputs/phase1/plots/publication/Fig09_FixedTemperature_Sweep.png`
 """
     with open(f"{out_dir}/FAST_RUN_REPORT.md", "w") as f:
         f.write(report_content)
@@ -327,9 +337,12 @@ MCTR dynamic control successfully tracked internal state without collapsing to a
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("max_examples_pos", nargs="?", type=int, default=None, help="Limit number of examples per split")
     parser.add_argument("--config", default="mctr/configs/phase1_complete.yaml")
     parser.add_argument("--smoke-test", action="store_true", help="Run with 5 examples per split")
     parser.add_argument("--max-examples", type=int, default=None, help="Limit number of examples per split to speed up real evaluation")
     args = parser.parse_args()
     
-    run_experiment(args.config, smoke_test=args.smoke_test, max_examples=args.max_examples)
+    max_examples = args.max_examples if args.max_examples is not None else args.max_examples_pos
+    run_experiment(args.config, smoke_test=args.smoke_test, max_examples=max_examples)
+

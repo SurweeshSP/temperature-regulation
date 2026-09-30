@@ -1,0 +1,24 @@
+{
+  "H1": {
+    "hypothesis": "H1: Meta-state Psi predicts correctness",
+    "auroc_by_feature": {
+      "note": "single class, AUROC undefined"
+    },
+    "conclusion": "Cannot compute AUROC: single class, AUROC undefined"
+  },
+  "H4": {
+    "hypothesis": "H4: MCTR-A produces measurable attention redistribution",
+    "mean_attn_js": 0.0,
+    "std_attn_js": 0.0,
+    "n": 5,
+    "conclusion": "Null result (JS \u2248 0)"
+  },
+  "H5": {
+    "hypothesis": "H5: MCTR-TA \u2260 MCTR-T",
+    "mannwhitney_p_entropy": 0.9165626446795413,
+    "delta_entropy": -0.0025378279387950897,
+    "mannwhitney_p_attention_js": NaN,
+    "delta_attention_js": 0.0,
+    "conclusion": "Requires experiment data"
+  }
+}

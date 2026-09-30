@@ -1,0 +1,13 @@
+Condition,attention_entropy_native_mean,attention_entropy_native_std,attention_entropy_mod_mean,attention_entropy_mod_std,attention_js_mean,attention_js_std,attention_modulation_mean,attention_modulation_std
+Fixed-T-0.1,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+Fixed-T-0.3,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+Fixed-T-0.5,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+Fixed-T-0.7,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+Fixed-T-0.9,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+Fixed-T-1.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+Native,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+MCTR-T,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+MCTR-A,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+MCTR-TA,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+MCTR-A_zero,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+MCTR-A_random,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
